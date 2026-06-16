@@ -14,6 +14,11 @@ This DIY air quality monitoring system integrates precision sensors with a conne
 * CO2 level
 * Air quality (particulates/dust)
 
+show it here
+<a href="http://www.youtube.com/watch?feature=player_embedded&v=xjLmPx-Fbjk
+" target="_blank"><img src="http://img.youtube.com/vi/xjLmPx-Fbjk/0.jpg" 
+alt="IMAGE ALT TEXT HERE" width="1180" height="664" border="10" /></a>
+
 ## System Architecture
 
 * **Processing Unit (Core):** The **[ESP32 S2 Lolin mini](https://fr.aliexpress.com/item/1005009711874009.html)** manages the sensors. It offers native Wi-Fi connectivity, ideal for sending data to dashboards (Home Assistant, InfluxDB, or MQTT). 
