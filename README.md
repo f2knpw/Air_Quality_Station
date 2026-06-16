@@ -36,6 +36,7 @@ alt="IMAGE ALT TEXT HERE" width="1180" height="664" border="10" /></a>
 
 
 The full project is described on my hackaday pages : https://hackaday.io/project/205888-air-quality-station
+PCB can be ordered at PCBWay : https://www.pcbway.com/project/shareproject/Air_Quality_station_6f7bd036.html
 Full project is described on my hackaday pages : https://hackaday.io/project/205888-air-quality-station
 
 Esp32-S2 source code is here : https://github.com/f2knpw/Air_Quality_Station/blob/master/air_quality.ino
