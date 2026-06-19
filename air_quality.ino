@@ -27,8 +27,8 @@
 
 #include <Arduino.h>
 #include <esp_sleep.h>
-#include <OneWire.h>
 #include <Wire.h>
+#include "driver/rtc_io.h"
 
 //Scd41
 #include <SensirionI2cScd4x.h>
@@ -40,7 +40,9 @@
 #include "PMS.h"
 
 //DS18B20
-#include <DallasTemperature.h>
+#include "OneWireNg_CurrentPlatform.h"
+#include "drivers/DSTherm.h"
+#include "utils/Placeholder.h"
 
 //E INK
 #include <SPI.h>
@@ -59,6 +61,7 @@
 //*****************************************************************************
 // PIN
 //*****************************************************************************
+#define PIN_LED 15
 
 #define PIN_EPD_CS     33
 #define PIN_EPD_DC     35  
@@ -76,8 +79,8 @@
 #define PIN_TEMP_DATA 38
 
 
-#define PIN_PMS_TX 7
-#define PIN_PMS_RX 5
+#define PIN_PMS_TX 5
+#define PIN_PMS_RX 7
 #define PIN_PMS_SET 3
 
 
@@ -122,7 +125,7 @@ struct DisplayData {
     SensorReading temp = {"N/A", "°C", 0};
     SensorReading humidity = {"N/A", "%", 0};
     SensorReading pressure = {"N/A", "hPa", 0};
-    SensorReading aqi = {"N/A", "Missing", 0};
+    SensorReading aqi = {"N/A", "MISSING", 0};
 };
 
 enum SensorState {
@@ -149,8 +152,8 @@ struct SensorTask {
 //*****************************************************************************
 
 #define MAX_SENSOR_ERRORS 3
-#define MIN_SAMPLES 10   
-#define REFRESH_SCREEN_AT_BOOT_COUNT 10
+#define MIN_SAMPLES 5  
+#define REFRESH_SCREEN_AT_BOOT_COUNT 30
 #define SLEEP_TIME_IN_MIN 5
 
 
@@ -172,9 +175,7 @@ SensirionI2cScd4x scd40;
 Adafruit_BME280 bme280;
 
 //DS18B20
-OneWire oneWire(PIN_TEMP_DATA);
-DallasTemperature ds18b20(&oneWire);
-#define DS18B20_DISCONNECTED_VALUE_C -127
+static Placeholder<OneWireNg_CurrentPlatform> ow;
 
 //Plantower 5003
 HardwareSerial pmsSerial(1);
@@ -193,42 +194,59 @@ SensorTask scd40SensorTask = { SENSOR_NOT_INIT, 0, 30000, 5000, 0, false };
 SensorAverage<SCD_COUNT> scd40Avg;   // CO2, temp, humidity
 
 enum DsIndex : uint8_t { DS_TEMP, DS_COUNT };
-SensorTask ds18b20SensorTask = { SENSOR_NOT_INIT, 0, 50, 1500, 0, false };
+SensorTask ds18b20SensorTask = { SENSOR_NOT_INIT, 0, 750, 750, 0, false };
 SensorAverage<DS_COUNT> ds18Avg;    // temp 
 
 enum BmeIndex : uint8_t { BME_TEMP, BME_HUM, BME_PRESS, BME_COUNT };
-SensorTask bme280SensorTask = { SENSOR_NOT_INIT, 0, 50, 500, 0, false };
+SensorTask bme280SensorTask = { SENSOR_NOT_INIT, 0, 5000, 2000, 0, false };
 SensorAverage<BME_COUNT> bmeAvg;     // temp, humidity, pressure
 
 
 
 void setup() {
+    gpio_reset_pin(GPIO_NUM_5);
+    gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_5, 1);
+    delay(50);
+
+
     Serial.begin(115200);
     delay(100);
-
     Serial.print("Setup");
+
+    powerOnBME280();
 
     //Share I2C 
     Wire.begin(PIN_SDA, PIN_SCL); 
+   
 
     esp_sleep_wakeup_cause_t wakeupCause = esp_sleep_get_wakeup_cause();
 
     if (wakeupCause == ESP_SLEEP_WAKEUP_UNDEFINED) {
         bootCount = 0; 
+
+          pinMode(PIN_LED, OUTPUT);
+          digitalWrite(PIN_LED, HIGH);  
+          delay(1000);                      
+          digitalWrite(PIN_LED, LOW); 
+          delay(500); 
+          digitalWrite(PIN_LED, HIGH); 
+          delay(1000);                    
+          digitalWrite(PIN_LED, LOW);   
     } else {
         bootCount++; 
 
-        //Clear bootCount after 100 cycle
+        //Clear bootCount
         if (bootCount >= REFRESH_SCREEN_AT_BOOT_COUNT) {
-        bootCount = 0; 
+            bootCount = 0; 
         }
     }
 
     //Init Sensors
-    pmsSensorTask.isEnabled = initPMS5003();
     scd40SensorTask.isEnabled = initSCD40();
     bme280SensorTask.isEnabled = initBME280();
     ds18b20SensorTask.isEnabled = initDS18B20();
+    pmsSensorTask.isEnabled = initPMS5003();
 
     Serial.printf("PMS5003 : %s\n",  pmsSensorTask.isEnabled   ? "OK" : "Missing");
     Serial.printf("SCD40   : %s\n",  scd40SensorTask.isEnabled  ? "OK" : "Missing");
@@ -258,10 +276,11 @@ void loop() {
         //Prepare to sleep
         powerDownDS18B20();
         powerDownBME280();
-        powerDownSCD40();
+        if(scd40SensorTask.isEnabled){
+            powerDownSCD40();
+        }
         powerDownPMS5003();
         prepareI2CToSleep();
-        powerDownDisplay();
         goToSleep(SLEEP_TIME_IN_MIN);
     }
 
@@ -292,25 +311,24 @@ DisplayData getDisplayData() {
         data.pm1_0.value = String(pm1_0_val, 1);
         data.pm2_5.value = String(pm2_5_val, 1);
         
-        // Calcul et ajout de l'AQI
         int aqiResult = calculatePM25AQI(pm2_5_val);
         data.aqi.value = String(aqiResult);
 
         if (aqiResult <= 50) {
             data.aqi.unit = "GOOD";
-            data.aqi.filledBars = 0;
+            data.aqi.filledBars = 1;
         } else if (aqiResult <= 100) {
             data.aqi.unit = "MODERATE";
-            data.aqi.filledBars = 1;
+            data.aqi.filledBars = 2;
         } else if (aqiResult <= 150) {
             data.aqi.unit = "BAD";
-            data.aqi.filledBars = 2;
+            data.aqi.filledBars = 3;
         } else if (aqiResult <= 200) {
             data.aqi.unit = "UNHEALTHY";
-            data.aqi.filledBars = 3;
+            data.aqi.filledBars = 4;
         } else if (aqiResult <= 300) {
             data.aqi.unit = "UNHEALTHY";
-            data.aqi.filledBars = 4;
+            data.aqi.filledBars = 5;
         } else {
             data.aqi.unit = "HAZARDOUS";
             data.aqi.filledBars = 5;
@@ -327,7 +345,7 @@ DisplayData getDisplayData() {
     if (bme280SensorTask.isEnabled && bmeAvg.count > 0) {
         data.temp.value = String(bmeAvg.get(BME_TEMP), 1);
         data.humidity.value  = String(bmeAvg.get(BME_HUM), 1);
-        data.pressure.value = String(bmeAvg.get(BME_PRESS), 1);
+        data.pressure.value = String(bmeAvg.get(BME_PRESS), 0);
     }
 
     if (ds18b20SensorTask.isEnabled && ds18Avg.count > 0) {
@@ -375,10 +393,10 @@ void prepareI2CToSleep() {
 }
 
 void goToSleep(int minutes) {
-    gpio_deep_sleep_hold_en();
-    esp_sleep_enable_timer_wakeup(MINUTES_EN_MICROSECONDES(minutes));
     Serial.println("Go to sleep");
-    Serial.flush();
+    delay(200);
+
+    esp_sleep_enable_timer_wakeup(MINUTES_EN_MICROSECONDES(minutes));
     esp_deep_sleep_start();
 }
 
@@ -444,12 +462,9 @@ void readSCD40() {
                     scd40SensorTask.errorCount++;
                     Serial.println("SCD40 error readMeasurement");
                 } else {
-                    Serial.println("SCD40 Reading new value");
-                    Serial.println("co2 : " + String(co2));
-                    Serial.println("temp : " + String(temp));
-                    Serial.println("humidity : " + String(humidity));
+                    Serial.println("SCD40 Reading new value \n CO2 : " + String(co2) + " / Humidity : " + String(humidity) + " / Temp : " + String(temp));
                    
-                   
+                
                     scd40SensorTask.errorCount = 0; 
                     float values[SCD_COUNT];
                     values[SCD_CO2]  = static_cast<float>(co2);
@@ -515,14 +530,11 @@ void powerDownSCD40() {
     if (scd40.stopPeriodicMeasurement() != NO_ERROR_SCD4X) {
         Serial.println("Error stopPeriodicMeasurement: ");
     }
-
-    delay(100);
+    
  
     if (scd40.powerDown() != NO_ERROR_SCD4X) { //power down is only available for SCD41
         Serial.println("Error SCD4X powerDown ");
-    }
-
-    delay(100);
+    } 
 }
 
 //*****************************************************************************
@@ -532,17 +544,24 @@ bool initDS18B20() {
     Serial.println("DS18B20 start init");
 
     gpio_hold_dis((gpio_num_t)PIN_TEMP_POWER);
+    
+
     pinMode(PIN_TEMP_POWER, OUTPUT);
     digitalWrite(PIN_TEMP_POWER, HIGH);
-
-    delay(50); 
-
-    ds18b20.begin();
   
-    if (ds18b20.getDeviceCount() == 0) return false;
+    delay(30);
 
-    ds18b20.setResolution(12);
-    ds18b20.requestTemperatures();
+    new (&ow) OneWireNg_CurrentPlatform(PIN_TEMP_DATA, false);
+    DSTherm drv(ow);
+
+    if (checkIfDS18B20IsWired()) {
+        drv.writeScratchpadAll(0, 0, DSTherm::RES_11_BIT);
+        drv.copyScratchpadAll(false);
+    } else {
+        return false;
+    }
+     
+    drv.convertTempAll(DSTherm::MAX_CONV_TIME, false);
 
     ds18b20SensorTask.state = SENSOR_WARMING_UP;
     ds18b20SensorTask.stateChangedAtMs = millis();
@@ -550,10 +569,35 @@ bool initDS18B20() {
     return true;
 }
 
+bool checkIfDS18B20IsWired() 
+{
+    DSTherm drv(ow);
+    Placeholder<DSTherm::Scratchpad> scrpd;
+    
+    OneWireNg::ErrorCode ec = drv.readScratchpadSingle(scrpd, false);
+    
+    if (ec == OneWireNg::EC_SUCCESS) {
+        return true;
+    } 
+    else if (ec == OneWireNg::EC_NO_DEVS) {
+        Serial.println("[DSTherm] OneWireNg::EC_NO_DEVS");
+        return false;
+    } 
+    else if (ec == OneWireNg::EC_CRC_ERROR) {
+        Serial.println("[DSTherm] OneWireNg::EC_CRC_ERROR");
+        return false;
+    } 
+    else {
+        Serial.println("[DSTherm] Error");
+        return false;
+    }
+}
+
 
 void readDS18B20() {
     if (!ds18b20SensorTask.isEnabled) return;
     uint32_t now = millis();
+    DSTherm drv(ow);
 
 
     switch (ds18b20SensorTask.state) {
@@ -567,21 +611,26 @@ void readDS18B20() {
             Serial.println("DS18B20 SENSOR_READY");
           }else{
 
-            float tempC = ds18b20.getTempCByIndex(0);
+            static PlaceholderInit<DSTherm::Scratchpad> scrpd;
 
-            if (tempC == DS18B20_DISCONNECTED_VALUE_C) {
-                ds18b20SensorTask.errorCount++;
-                Serial.println("DS18B20 error readMeasurement");
-            } else {
+            OneWireNg::ErrorCode ec = drv.readScratchpadSingle(scrpd);
+            if (ec == OneWireNg::EC_SUCCESS) {
+                
+                float tempC = (float)scrpd->getTemp2() / 16.0;
                 Serial.println("DS18B20 Reading new value \n Temp : " + String(tempC));
+
                 float values[DS_COUNT];
                 values[DS_TEMP]  = tempC;
                 ds18Avg.add(values);
 
                 ds18b20SensorTask.errorCount = 0; 
+            } else {
+                ds18b20SensorTask.errorCount++;
+                Serial.println("DS18B20 error readMeasurement");
             }
-            //Ask and wait 1500 ms
-            ds18b20.requestTemperatures();
+
+            //Ask and wait 750 ms
+            drv.convertTempAll(DSTherm::MAX_CONV_TIME, false);
 
             // Too many errors
             if (ds18b20SensorTask.errorCount >= MAX_SENSOR_ERRORS) {
@@ -597,6 +646,9 @@ void readDS18B20() {
       case SENSOR_WARMING_UP:
         if (now - ds18b20SensorTask.stateChangedAtMs >= ds18b20SensorTask.warmupDurationMs) {
             Serial.println("DS18B20 end warmup");
+            //Ask and wait 750 ms
+            drv.convertTempAll(DSTherm::MAX_CONV_TIME, false);
+            ds18b20SensorTask.stateChangedAtMs = now; 
             ds18b20SensorTask.state = SENSOR_READING;
             ds18Avg.reset();
         }
@@ -614,8 +666,8 @@ void readDS18B20() {
 void powerDownDS18B20() {
     Serial.println("powerDown DS18B20");
 
+    pinMode(PIN_TEMP_POWER, OUTPUT);
     digitalWrite(PIN_TEMP_POWER, LOW);
-    pinMode(PIN_TEMP_DATA, INPUT);
     delay(50);
 
     gpio_hold_en((gpio_num_t)PIN_TEMP_POWER);
@@ -624,14 +676,19 @@ void powerDownDS18B20() {
 //*****************************************************************************
 // BME 280
 //*****************************************************************************
-bool initBME280() {
+void powerOnBME280() {
     Serial.println("BME280 start init");
 
     gpio_hold_dis((gpio_num_t)PIN_BME_POWER);
+
     pinMode(PIN_BME_POWER, OUTPUT);
     digitalWrite(PIN_BME_POWER, HIGH);
+    delay(100); 
+}
 
-    delay(50); 
+
+bool initBME280() {
+    Serial.println("BME280 start init");
 
     bool initSuccess = false;
     if (bme280.begin(0x76, &Wire)) {
@@ -639,15 +696,15 @@ bool initBME280() {
     } else if (bme280.begin(0x77, &Wire)) {
         initSuccess = true;
     }
-
+    
     if (!initSuccess) {
         Serial.println("BME280 init FAILED");
         return false;
     }
 
     bme280.setSampling(
-        Adafruit_BME280::MODE_SLEEP,
-        Adafruit_BME280::SAMPLING_X4, // temperature
+        Adafruit_BME280::MODE_FORCED,
+        Adafruit_BME280::SAMPLING_X1, // temperature
         Adafruit_BME280::SAMPLING_X16, // pressure
         Adafruit_BME280::SAMPLING_X4, // humidity
         Adafruit_BME280::FILTER_OFF // Always OFF we use deep sleep
@@ -673,13 +730,16 @@ void readBME280() {
             bme280SensorTask.state = SENSOR_READY;
             Serial.println("BME280 SENSOR_READY");
           }else{
+
+
+
             if (!bme280.takeForcedMeasurement()) {
                 bme280SensorTask.errorCount++;
                 Serial.println("BME280 error readMeasurement");
             } else {
                 float tempBme = bme280.readTemperature();
                 float humBme = bme280.readHumidity();
-                float presBme = bme280.readPressure();
+                float presBme = bme280.readPressure() / 100.0F;
                 Serial.println("BME280 Reading new value \n Temp : " + String(tempBme) + " / Humidity : " + String(humBme) + " / Pressure : " + String(presBme));
                 
 
@@ -707,6 +767,7 @@ void readBME280() {
         if (now - bme280SensorTask.stateChangedAtMs >= bme280SensorTask.warmupDurationMs) {
             Serial.println("BME280 end warmup");
             bme280SensorTask.state = SENSOR_READING;
+            bme280SensorTask.stateChangedAtMs = now;
             bmeAvg.reset();
         }
         break;
@@ -721,8 +782,9 @@ void readBME280() {
 }
 
 
+
 void powerDownBME280() {
-    Serial.println("powerDownBME280");
+    Serial.println("powerDown BME280");
 
     //Keep High because I2C is shared
     digitalWrite(PIN_BME_POWER, HIGH);
@@ -738,38 +800,53 @@ void powerDownBME280() {
 bool initPMS5003(){
     Serial.println("PMS5003 start init");
 
-    gpio_hold_dis((gpio_num_t)PIN_PMS_SET);
+   /* gpio_reset_pin(GPIO_NUM_5);
+    gpio_set_direction(GPIO_NUM_5, GPIO_MODE_OUTPUT);
+    gpio_set_level(GPIO_NUM_5, 1);  // UART idle = HIGH
+    delay(50);
+
+    rtc_gpio_hold_dis((gpio_num_t)PIN_PMS_SET);
+    rtc_gpio_deinit((gpio_num_t)PIN_PMS_SET); 
+    gpio_hold_dis((gpio_num_t)PIN_PMS_SET); 
+
+    // 2. Configuration standard du GPIO
     pinMode(PIN_PMS_SET, OUTPUT);
+
+    // 3. HARD RESET : On force l'extinction électrique pendant 600ms
+    digitalWrite(PIN_PMS_SET, LOW); 
+    delay(600); 
+    
+    // 4. On rallume le capteur
     digitalWrite(PIN_PMS_SET, HIGH); 
-    delay(100);
+    delay(1200); // Temps de boot du firmware Plantower*/
+
     
     pmsSerial.begin(PMS::BAUD_RATE, SERIAL_8N1, PIN_PMS_RX, PIN_PMS_TX);
+    delay(2000);
+
 
     pms.passiveMode(); 
+    delay(100);
     pms.wakeUp();
-    delay(100); 
 
-    uint32_t start = millis();
-    bool detected = false;
+    delay(3000); 
 
-    // Boucle de détection (2 secondes suffisent largement maintenant)
-    while (millis() - start < 2000) { 
-        if (pmsSerial.available()) {
-            detected = true;
-            break; 
-        }
-        delay(10);
-    }
-    
+    while (pmsSerial.available()) { 
+        pmsSerial.read(); 
+    } 
 
-    if (detected) {
-        pms.passiveMode(); 
+    PMS::DATA data;
+
+    pms.requestRead();
+
+    if (pms.readUntil(data)){
         pmsSensorTask.state = SENSOR_WARMING_UP;
         pmsSensorTask.stateChangedAtMs = millis();
-        return true;
+       return true;
+    } else {
+        return false;
     }
-
-    return false;
+    
 }
 
 
@@ -843,17 +920,10 @@ void readPMS5003() {
 
 
 void powerDownPMS5003() {
-    Serial.println("powerDown PMS5003");
 
-    pmsSerial.end();
+    pms.sleep();
+    delay(500);
 
-    pinMode(PIN_PMS_RX, INPUT);
-    pinMode(PIN_PMS_TX, INPUT);
-
-    digitalWrite(PIN_PMS_SET, LOW);
-    delay(50);
-    
-    gpio_hold_en((gpio_num_t)PIN_PMS_SET);
 }
 
 
@@ -891,10 +961,10 @@ void displayAirQualityDashboard(const DisplayData& data) {
         // ==========================================
         // GRID
         // ==========================================
-        display.drawFastVLine(160, 0, 240, GxEPD_BLACK);   // Séparateur vertical gauche/droite
-        display.drawFastHLine(160, 80,  256, GxEPD_BLACK);  // Ligne 1: TEMP | HUMIDITY
-        display.drawFastHLine(160, 160, 256, GxEPD_BLACK);  // Ligne 2: CO2  | PRESSURE
-        display.drawFastVLine(288, 0, 240, GxEPD_BLACK);    // Séparateur vertical colonne droite
+        display.drawFastVLine(160, 0, 240, GxEPD_BLACK);   
+        display.drawFastHLine(160, 80,  256, GxEPD_BLACK);  
+        display.drawFastHLine(160, 160, 256, GxEPD_BLACK);  
+        display.drawFastVLine(288, 0, 240, GxEPD_BLACK);   
 
         // ==========================================
         // AQI BLOCK
@@ -1010,11 +1080,7 @@ void drawTile(int x, int y, int w, int h,
 }
 
 
-void powerDownDisplay() {
-    Serial.println("powerDown Display");
 
-    display.hibernate();
-}
 
 
 
