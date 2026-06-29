@@ -92,19 +92,21 @@
 //#define USE_MQTT        //Uncomment if you wish to use it.
 
 // --- Wifi config ---
-const char* ssid = "YOUR_SSID";
-const char* password = "YourPassword";
+const char* ssid = "Your SSID";
+const char* password = "your password";
 int nbReconnect = 0;
 
 #ifdef USE_MQTT
-#include <PubSubClient.h>
+#include <PubSubClient.h>  //http://pubsubclient.knolleary.net/
+
 
 // MQTT Credentials  -- These will override the global settings
 const char* mqtt_server = "192.168.1.174";  //http://192.168.1.174:8123
 #define mqtt_port 1883                      // Default MQTT port is 1883
+
 #define MQTT_USER "mqtt_broker"
-#define MQTT_PASSWORD "yourMQTT_password"
-#define MQTT_RECEIVER_CH "garden/cmd"		//for future use (control/command)
+#define MQTT_PASSWORD "your MQTT broker password"
+#define MQTT_RECEIVER_CH "garden/cmd" //reserved for future use (con
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -113,8 +115,8 @@ PubSubClient mqttClient(wifiClient);
 
 #ifdef USE_THINGSPEAK
 #include "ThingSpeak.h"
-unsigned long myChannelNumber = 111111;
-const char* myWriteAPIKey = "your Write APIkey";
+unsigned long myChannelNumber = 11111;
+const char* myWriteAPIKey = "yourAPIkey";
 
 WiFiClient tsClient;
 #endif
@@ -1287,7 +1289,12 @@ void reconnect() {
     }
   }
 }
-
+String getChipId() {
+  uint64_t chipid = ESP.getEfuseMac(); // Lit l'adresse MAC
+  char buffer[15];
+  snprintf(buffer, sizeof(buffer), "%04X%08X", (uint16_t)(chipid >> 32), (uint32_t)chipid);
+  return String(buffer);
+}
 bool initMQTT() {
 
   Serial.println("Init MQTT...");
@@ -1306,8 +1313,7 @@ bool initMQTT() {
 
 
     // Create a random client ID
-    String clientId = "ESP32Client-";
-    clientId += String(random(0xffff), HEX);
+    String clientId = "ESP32-" + getChipId();
     // Attempt to connect
     if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
       Serial.println("connected");
@@ -1336,13 +1342,12 @@ bool initMQTT() {
 void publishDataOnMQTT(const DisplayData& data) {
   bool isInit = initMQTT();
   if (!isInit) return;
-  delay(1000);
-  reconnect();
+  
 
   if (!mqttClient.connected()) {
   reconnect();
   }
-  mqttClient.loop();
+  
   //send sensors values to MQTT broker
   mqttClient.publish("sensorValue/temperature", data.temp.value.c_str());
   mqttClient.publish("sensorValue/humidity", data.humidity.value.c_str());
@@ -1350,7 +1355,9 @@ void publishDataOnMQTT(const DisplayData& data) {
   mqttClient.publish("sensorValue/aqi", data.aqi.value.c_str());
   mqttClient.publish("sensorValue/CO2", data.co2.value.c_str());
   Serial.println("MQTT publish ok");
-
+ delay(1000);
+  mqttClient.loop();
+  delay(100);  //let some time for server to react
   mqttClient.disconnect();
 }
 
