@@ -19,7 +19,7 @@
  * This device is designed for MAINS POWER (USB / Wall Adapter). 
  *
  * Workflow:
- * Boot -> Init Sensors -> Async Warm-up & Multi-sampling -> Render E-Ink -> Deep Sleep
+ * Boot -> Init Sensors -> Async Warm-up & Multi-sampling -> Render E-Ink -> IoT -> Deep Sleep
  *
  * ============================================================================
  */
@@ -94,7 +94,6 @@
 // --- Wifi config ---
 const char* ssid = "Your SSID";
 const char* password = "your password";
-int nbReconnect = 0;
 
 #ifdef USE_MQTT
 #include <PubSubClient.h>  //http://pubsubclient.knolleary.net/
@@ -261,10 +260,8 @@ void setup() {
   bool showLoadingScreen = false;
 
   Serial.begin(115200);
-  delay(1000);
-  while (!Serial) {  // Attend que le port USB CDC soit prêt
-    delay(100);      // Petite pause pour stabiliser
-  }
+  delay(5000);
+ 
   Serial.print("Setup");
 
   powerOnBME280();
@@ -342,8 +339,6 @@ void loop() {
 #endif
     goToSleep(SLEEP_TIME_IN_MIN);
   }
-
-
   delay(200);
 }
 
@@ -783,9 +778,7 @@ void readBME280() {
   if (!bme280SensorTask.isEnabled) return;
   uint32_t now = millis();
 
-
   switch (bme280SensorTask.state) {
-
     case SENSOR_READING:
       if (now - bme280SensorTask.stateChangedAtMs >= bme280SensorTask.readingIntervalMs) {
         bme280SensorTask.stateChangedAtMs = now;
@@ -804,7 +797,6 @@ void readBME280() {
             float presBme = bme280.readPressure() / 100.0F;
             Serial.println("BME280 Reading new value \n Temp : " + String(tempBme) + " / Humidity : " + String(humBme) + " / Pressure : " + String(presBme));
 
-
             bme280SensorTask.errorCount = 0;
             float values[BME_COUNT];
             values[BME_TEMP] = tempBme;
@@ -817,7 +809,6 @@ void readBME280() {
               Serial.println("BME280 SENSOR_READY");
             }
           }
-
 
           // Too many errors
           if (bme280SensorTask.errorCount >= MAX_SENSOR_ERRORS) {
@@ -1261,34 +1252,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   Serial.write(payload, length);
   Serial.println();
 }
-void reconnect() {
 
-  // Loop until we're reconnected
-  while (!mqttClient.connected()) {
-    nbReconnect++;
-    if (nbReconnect > 10) {
-      nbReconnect = 0;
-      return;
-    };
-    Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "ESP32Client-";
-    clientId += String(random(0xffff), HEX);
-    // Attempt to connect
-    if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
-      Serial.println("connected");
-      //Once connected, publish an announcement...
-      mqttClient.publish("/icircuit/presence/ESP32/", "hello world");
-      // ... and resubscribe
-      mqttClient.subscribe(MQTT_RECEIVER_CH);
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(mqttClient.state());
-      Serial.println(" try again in 1 seconds");
-      delay(3000);
-    }
-  }
-}
 String getChipId() {
   uint64_t chipid = ESP.getEfuseMac(); // Lit l'adresse MAC
   char buffer[15];
@@ -1317,8 +1281,6 @@ bool initMQTT() {
     // Attempt to connect
     if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
       Serial.println("connected");
-      //Once connected, publish an announcement...
-      mqttClient.publish("/icircuit/presence/ESP32/", "hello world");
       // ... and resubscribe
       mqttClient.subscribe(MQTT_RECEIVER_CH);
       return true;
@@ -1327,15 +1289,10 @@ bool initMQTT() {
       Serial.println(mqttClient.state());
       Serial.println(" try again in 1 seconds");
     }
-
-
     attempts++;
     delay(500);
   }
-
-
   mqttClient.disconnect();
-
   return false;
 }
 
@@ -1343,19 +1300,14 @@ void publishDataOnMQTT(const DisplayData& data) {
   bool isInit = initMQTT();
   if (!isInit) return;
   
-
-  if (!mqttClient.connected()) {
-  reconnect();
-  }
-  
-  //send sensors values to MQTT broker
-  mqttClient.publish("sensorValue/temperature", data.temp.value.c_str());
-  mqttClient.publish("sensorValue/humidity", data.humidity.value.c_str());
-  mqttClient.publish("sensorValue/pressure", data.pressure.value.c_str());
-  mqttClient.publish("sensorValue/aqi", data.aqi.value.c_str());
-  mqttClient.publish("sensorValue/CO2", data.co2.value.c_str());
+  //send sensors values to MQTT broker (with retain flag on)
+  mqttClient.publish("sensorValue/temperature", data.temp.value.c_str(), true);
+  mqttClient.publish("sensorValue/humidity", data.humidity.value.c_str(), true);
+  mqttClient.publish("sensorValue/pressure", data.pressure.value.c_str(), true);
+  mqttClient.publish("sensorValue/aqi", data.aqi.value.c_str(), true);
+  mqttClient.publish("sensorValue/CO2", data.co2.value.c_str(), true);
   Serial.println("MQTT publish ok");
- delay(1000);
+  delay(1000);
   mqttClient.loop();
   delay(100);  //let some time for server to react
   mqttClient.disconnect();
