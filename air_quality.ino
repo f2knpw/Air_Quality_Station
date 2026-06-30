@@ -194,6 +194,7 @@ struct SensorTask {
 //*****************************************************************************
 
 #define DS18B20_OFFSET -0.4  //calibration offset for temperature sensor
+#define PRESSURE_OFFSET 24    //compensation of pressure to sea level
 #define MAX_SENSOR_ERRORS 3
 #define MIN_SAMPLES 7
 #define REFRESH_SCREEN_AT_BOOT_COUNT 30
@@ -794,7 +795,7 @@ void readBME280() {
           } else {
             float tempBme = bme280.readTemperature();
             float humBme = bme280.readHumidity();
-            float presBme = bme280.readPressure() / 100.0F;
+            float presBme = bme280.readPressure() / 100.0F + PRESSURE_OFFSET;
             Serial.println("BME280 Reading new value \n Temp : " + String(tempBme) + " / Humidity : " + String(humBme) + " / Pressure : " + String(presBme));
 
             bme280SensorTask.errorCount = 0;
@@ -1189,7 +1190,23 @@ void disconnectWifi() {
   WiFi.mode(WIFI_OFF);
   delay(1);
 }
+void sendDiscovery() {
+  // Liste des capteurs à déclarer
+  const char* configs[][2] = {
+    {"co2", "{\"name\":\"CO2\",\"unique_id\":\"AQ_co2_01\",\"state_topic\":\"sensorValue/CO2\",\"unit_of_measurement\":\"ppm\",\"icon\":\"mdi:molecule-co2\",\"device_class\":\"carbon_dioxide\",\"state_class\":\"measurement\"}"},
+    {"temperature", "{\"name\":\"Temperature\",\"unique_id\":\"AQ_temperature_01\",\"state_topic\":\"sensorValue/temperature\",\"unit_of_measurement\":\"°C\",\"icon\":\"mdi:thermometer\",\"device_class\":\"temperature\",\"state_class\":\"measurement\"}"},
+    {"humidity", "{\"name\":\"Humidity\",\"unique_id\":\"AQ_humidity_01\",\"state_topic\":\"sensorValue/humidity\",\"unit_of_measurement\":\"%\",\"icon\":\"mdi:water-percent\",\"device_class\":\"humidity\",\"state_class\":\"measurement\"}"},
+    {"pressure", "{\"name\":\"Pressure\",\"unique_id\":\"AQ_pressure_01\",\"state_topic\":\"sensorValue/pressure\",\"unit_of_measurement\":\"hPa\",\"icon\":\"mdi:gauge\",\"device_class\":\"atmospheric_pressure\",\"state_class\":\"measurement\"}"},
+    {"aqi", "{\"name\":\"AQI\",\"unique_id\":\"AQ_aqi_01\",\"state_topic\":\"sensorValue/aqi\",\"icon\":\"mdi:air-filter\",\"device_class\":\"aqi\",\"state_class\":\"measurement\"}"}
+  };
+ 
 
+  for (int i = 0; i < 5; i++) {
+    String topic = "homeassistant/sensor/" + String(configs[i][0]) + "/config";
+    mqttClient.publish(topic.c_str(), configs[i][1], true);
+    delay(200);  // Petite pause pour éviter la saturation du bus MQTT
+  }
+}
 
 
 void publishData(const DisplayData& data) {
@@ -1281,8 +1298,10 @@ bool initMQTT() {
     // Attempt to connect
     if (mqttClient.connect(clientId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
       Serial.println("connected");
-      // ... and resubscribe
-      mqttClient.subscribe(MQTT_RECEIVER_CH);
+      delay(200);
+      //declare sensors for self discovery
+      sendDiscovery();
+        delay(200);
       return true;
     } else {
       Serial.print("Erreur MQTT, code=");
